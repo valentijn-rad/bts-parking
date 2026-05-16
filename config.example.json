@@ -5,5 +5,7 @@
     "your.address@gmail.com",
     "friend@example.com",
     "another@example.com"
-  ]
+  ],
+  "whatsapp_phone": "31600000000",
+  "whatsapp_apikey": "1234567"
 }

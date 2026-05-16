@@ -17,6 +17,8 @@ import os
 import smtplib
 import sys
 import traceback
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -60,6 +62,8 @@ def load_config() -> dict:
             "email": env_email,
             "app_password": os.environ.get("BTS_APP_PASSWORD", ""),
             "recipients": raw_recipients,
+            "whatsapp_phone": os.environ.get("BTS_WHATSAPP_PHONE", ""),
+            "whatsapp_apikey": os.environ.get("BTS_WHATSAPP_APIKEY", ""),
         }
     with open(CONFIG_PATH, encoding="utf-8") as fh:
         return json.load(fh)
@@ -97,6 +101,28 @@ def send_email(
         server.login(config["email"], config["app_password"])
         server.send_message(msg, to_addrs=recipients)
     log(f"Email sent to {len(recipients)} recipient(s): {subject}")
+
+
+def send_whatsapp(config: dict, text: str) -> bool:
+    """Best-effort WhatsApp via CallMeBot. Returns True on apparent success.
+    Never raises - email stays the primary channel."""
+    phone = str(config.get("whatsapp_phone") or "").strip()
+    apikey = str(config.get("whatsapp_apikey") or "").strip()
+    if not phone or not apikey:
+        log("WhatsApp not configured; skipping.")
+        return False
+    url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode(
+        {"phone": phone, "text": text, "apikey": apikey}
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", "ignore")[:200]
+        log(f"WhatsApp sent (HTTP {status}). Response: {body!r}")
+        return 200 <= status < 300
+    except Exception:
+        log("WhatsApp send failed:\n" + traceback.format_exc())
+        return False
 
 
 def take_screenshot(page, path: Path = SCREENSHOT_PATH) -> Path | None:
@@ -279,8 +305,13 @@ def send_test_email() -> None:
             """,
             attachment=shot,
         )
+        send_whatsapp(
+            config,
+            "BTS parking checker test - WhatsApp works. "
+            f"You'll get the real alert here when July opens. {URL}",
+        )
         log("Test email sent successfully.")
-        print("OK - test email sent. Check your inbox.")
+        print("OK - test email sent. Check your inbox + WhatsApp.")
     except Exception:
         log("Test email FAILED:\n" + traceback.format_exc())
         print("FAILED - see checker.log for details.")
@@ -349,10 +380,16 @@ def main() -> None:
                     attachment=screenshot,
                 )
             except Exception:
-                log("ERROR sending heartbeat:\n" + traceback.format_exc())
+                log("ERROR sending heartbeat email:\n" + traceback.format_exc())
+            send_whatsapp(
+                config,
+                f"BTS parking checker heartbeat: alive, calendar still on "
+                f"{highest}. Will alert when July opens.",
+            )
         log("--- Run end (no change) ---")
         return
 
+    email_ok = False
     try:
         send_email(
             config,
@@ -368,9 +405,20 @@ def main() -> None:
             """,
             attachment=screenshot,
         )
-        signal_found()
+        email_ok = True
     except Exception:
-        log("ERROR sending email (will retry next run):\n" + traceback.format_exc())
+        log("ERROR sending alert email:\n" + traceback.format_exc())
+
+    whatsapp_ok = send_whatsapp(
+        config,
+        "BTS Parking ALERT: July is now on the booking calendar! "
+        f"Book Parking C for July 2 now: {URL}",
+    )
+
+    if email_ok or whatsapp_ok:
+        signal_found()
+    else:
+        log("Both channels failed; not signaling - will retry next run.")
 
     log("--- Run end ---")
 

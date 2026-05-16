@@ -39,6 +39,8 @@ jobs:
           BTS_EMAIL: ${{ secrets.BTS_EMAIL }}
           BTS_APP_PASSWORD: ${{ secrets.BTS_APP_PASSWORD }}
           BTS_RECIPIENTS: ${{ secrets.BTS_RECIPIENTS }}
+          BTS_WHATSAPP_PHONE: ${{ secrets.BTS_WHATSAPP_PHONE }}
+          BTS_WHATSAPP_APIKEY: ${{ secrets.BTS_WHATSAPP_APIKEY }}
         run: |
           if [ "${{ inputs.test_email }}" = "true" ]; then
             echo "Manual test-email run."
