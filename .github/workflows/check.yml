@@ -3,7 +3,12 @@ name: BTS Parking Check
 on:
   schedule:
     - cron: "*/15 * * * *"   # every 15 min (GitHub may delay/coalesce)
-  workflow_dispatch: {}        # manual "Run workflow" button
+  workflow_dispatch:           # manual "Run workflow" button
+    inputs:
+      test_email:
+        description: "Send a test email (with screenshot) instead of the silent check"
+        type: boolean
+        default: false
 
 permissions:
   actions: write               # allow the job to disable this workflow
@@ -33,7 +38,13 @@ jobs:
           BTS_EMAIL: ${{ secrets.BTS_EMAIL }}
           BTS_APP_PASSWORD: ${{ secrets.BTS_APP_PASSWORD }}
           BTS_RECIPIENTS: ${{ secrets.BTS_RECIPIENTS }}
-        run: python checker.py
+        run: |
+          if [ "${{ inputs.test_email }}" = "true" ]; then
+            echo "Manual test-email run."
+            python checker.py --test-email
+          else
+            python checker.py
+          fi
 
       - name: Upload page snapshot on failure
         if: failure()
