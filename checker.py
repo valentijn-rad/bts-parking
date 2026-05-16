@@ -18,6 +18,7 @@ import smtplib
 import sys
 import traceback
 from datetime import datetime
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -29,6 +30,7 @@ CONFIG_PATH = BASE_DIR / "config.json"
 FLAG_PATH = BASE_DIR / "notified.flag"
 LOG_PATH = BASE_DIR / "checker.log"
 SNAPSHOT_PATH = BASE_DIR / "last_page.html"
+SCREENSHOT_PATH = BASE_DIR / "screenshot.png"
 
 IN_ACTIONS = bool(os.environ.get("GITHUB_ACTIONS"))
 
@@ -72,18 +74,39 @@ def get_recipients(config: dict) -> list:
     return [r.strip() for r in recipients if r.strip()]
 
 
-def send_email(config: dict, subject: str, html_body: str) -> None:
+def send_email(
+    config: dict, subject: str, html_body: str, attachment: Path | None = None
+) -> None:
     recipients = get_recipients(config)
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart()
     msg["From"] = config["email"]
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
 
+    if attachment and Path(attachment).exists():
+        with open(attachment, "rb") as fh:
+            img = MIMEImage(fh.read())
+        img.add_header(
+            "Content-Disposition", "attachment", filename=Path(attachment).name
+        )
+        msg.attach(img)
+        log(f"Attached screenshot: {Path(attachment).name}")
+
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(config["email"], config["app_password"])
         server.send_message(msg, to_addrs=recipients)
     log(f"Email sent to {len(recipients)} recipient(s): {subject}")
+
+
+def take_screenshot(page, path: Path = SCREENSHOT_PATH) -> Path | None:
+    try:
+        page.screenshot(path=str(path), full_page=True)
+        log(f"Screenshot saved: {path.name}")
+        return path
+    except Exception:
+        log("Screenshot failed:\n" + traceback.format_exc())
+        return None
 
 
 # --- Selectors for the FullCalendar widget on this site ---
@@ -154,7 +177,7 @@ def click_next(page) -> bool:
         return False
 
 
-def check_availability() -> bool:
+def check_availability() -> tuple[bool, Path | None]:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -174,7 +197,7 @@ def check_availability() -> bool:
             log(f"Calendar opened on: '{label or '(unknown)'}'")
             if TARGET_MONTH.lower() in label.lower():
                 log("July already visible on first load.")
-                return True
+                return True, take_screenshot(page)
 
             for attempt in range(1, MAX_NEXT_CLICKS + 1):
                 if not next_is_available(page):
@@ -182,7 +205,7 @@ def check_availability() -> bool:
                         f"Next-month control unavailable at '{label}' "
                         f"(attempt {attempt}). July not bookable yet."
                     )
-                    return False
+                    return False, None
 
                 prev_label = label
                 click_next(page)
@@ -192,14 +215,32 @@ def check_availability() -> bool:
                 if TARGET_MONTH.lower() in label.lower():
                     log(f"July became visible after {attempt} click(s).")
                     SNAPSHOT_PATH.write_text(page.content(), encoding="utf-8")
-                    return True
+                    return True, take_screenshot(page)
 
                 if label and label == prev_label:
                     log("Month did not change after click; stopping.")
-                    return False
+                    return False, None
 
             log("July not reached within click limit.")
-            return False
+            return False, None
+        finally:
+            browser.close()
+
+
+def capture_current_page() -> Path | None:
+    """Open the site and screenshot whatever the calendar currently shows.
+    Used by --test-email so the test proves the screenshot pipeline too."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            page.goto(URL, wait_until="networkidle", timeout=45000)
+            page.wait_for_timeout(2500)
+            dismiss_cookie_banner(page)
+            page.wait_for_timeout(1000)
+            label = get_month_label(page)
+            log(f"Test screenshot - calendar on: '{label or '(unknown)'}'")
+            return take_screenshot(page)
         finally:
             browser.close()
 
@@ -211,17 +252,24 @@ def send_test_email() -> None:
         log("config.json not found. Copy config.example.json and fill it in.")
         sys.exit(1)
     try:
+        shot = None
+        try:
+            shot = capture_current_page()
+        except Exception:
+            log("Test screenshot capture failed:\n" + traceback.format_exc())
         send_email(
             config,
             "BTS Parking checker - test email",
             f"""
             <h2>Test email - your BTS parking checker can send mail.</h2>
-            <p>If you're reading this, Gmail SMTP is configured correctly.
+            <p>If you're reading this, Gmail SMTP is configured correctly and
+            the attached screenshot shows the calendar as it looks right now.
             The real alert will look similar and link to:</p>
             <p><a href="{URL}">{URL}</a></p>
             <p style="color:#888;font-size:12px">
             Sent {datetime.now():%Y-%m-%d %H:%M:%S}.</p>
             """,
+            attachment=shot,
         )
         log("Test email sent successfully.")
         print("OK - test email sent. Check your inbox.")
@@ -268,7 +316,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        available = check_availability()
+        available, screenshot = check_availability()
     except Exception:
         log("ERROR during check:\n" + traceback.format_exc())
         return
@@ -290,6 +338,7 @@ def main() -> None:
             Sent automatically by the BTS parking checker at
             {datetime.now():%Y-%m-%d %H:%M:%S}.</p>
             """,
+            attachment=screenshot,
         )
         signal_found()
     except Exception:
