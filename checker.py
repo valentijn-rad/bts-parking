@@ -4,10 +4,16 @@ BTS Parking checker.
 Loads the Brussels Expo parking calendar, clicks "Next" until the calendar
 reaches July, and emails an alert the first time July becomes visible.
 
-Run via Windows Task Scheduler every 15 minutes (see setup.bat).
+Runs in two modes:
+  - Cloud (GitHub Actions): credentials from env vars BTS_EMAIL /
+    BTS_APP_PASSWORD / BTS_RECIPIENTS. On a hit it writes found=true to
+    $GITHUB_OUTPUT so the workflow can disable itself (no spam).
+  - Local (Windows Task Scheduler): credentials from config.json; on a hit
+    it writes notified.flag so subsequent runs stay quiet until re-armed.
 """
 
 import json
+import os
 import smtplib
 import sys
 import traceback
@@ -23,6 +29,8 @@ CONFIG_PATH = BASE_DIR / "config.json"
 FLAG_PATH = BASE_DIR / "notified.flag"
 LOG_PATH = BASE_DIR / "checker.log"
 SNAPSHOT_PATH = BASE_DIR / "last_page.html"
+
+IN_ACTIONS = bool(os.environ.get("GITHUB_ACTIONS"))
 
 URL = "https://parking.tickets.brussels-expo.com/schedule?language=en"
 
@@ -42,15 +50,25 @@ def log(message: str) -> None:
 
 
 def load_config() -> dict:
+    """Env vars take priority (cloud); fall back to config.json (local)."""
+    env_email = os.environ.get("BTS_EMAIL")
+    if env_email:
+        raw_recipients = os.environ.get("BTS_RECIPIENTS", env_email)
+        return {
+            "email": env_email,
+            "app_password": os.environ.get("BTS_APP_PASSWORD", ""),
+            "recipients": raw_recipients,
+        }
     with open(CONFIG_PATH, encoding="utf-8") as fh:
         return json.load(fh)
 
 
 def get_recipients(config: dict) -> list:
-    """Recipients list, defaulting to the sender if not specified."""
+    """Recipients, defaulting to the sender. Accepts a list or a
+    comma/semicolon-separated string (env vars are strings)."""
     recipients = config.get("recipients") or [config["email"]]
     if isinstance(recipients, str):
-        recipients = [recipients]
+        recipients = recipients.replace(";", ",").split(",")
     return [r.strip() for r in recipients if r.strip()]
 
 
@@ -213,6 +231,23 @@ def send_test_email() -> None:
         sys.exit(1)
 
 
+def signal_found() -> None:
+    """Record that July was found so we stop alerting.
+
+    Cloud: write found=true to $GITHUB_OUTPUT; the workflow then disables
+    itself. Local: write notified.flag so future runs stay quiet."""
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a", encoding="utf-8") as fh:
+            fh.write("found=true\n")
+        log("Signaled found=true to GitHub Actions (workflow will disable).")
+    else:
+        FLAG_PATH.write_text(
+            f"Notified at {datetime.now():%Y-%m-%d %H:%M:%S}\n", encoding="utf-8"
+        )
+        log("Wrote notified.flag. Will stay quiet until re-armed.")
+
+
 def main() -> None:
     if "--test-email" in sys.argv:
         send_test_email()
@@ -220,14 +255,16 @@ def main() -> None:
 
     log("--- Run start ---")
 
-    if FLAG_PATH.exists():
+    # Local only: the flag file persists between runs. In Actions the runner
+    # is ephemeral, so the workflow self-disables instead (see signal_found).
+    if not IN_ACTIONS and FLAG_PATH.exists():
         log("notified.flag present; already alerted. Delete it to re-arm. Exiting.")
         return
 
     try:
         config = load_config()
     except FileNotFoundError:
-        log("config.json not found. Copy config.example.json and fill it in.")
+        log("No credentials: set BTS_EMAIL env vars or create config.json.")
         sys.exit(1)
 
     try:
@@ -254,10 +291,7 @@ def main() -> None:
             {datetime.now():%Y-%m-%d %H:%M:%S}.</p>
             """,
         )
-        FLAG_PATH.write_text(
-            f"Notified at {datetime.now():%Y-%m-%d %H:%M:%S}\n", encoding="utf-8"
-        )
-        log("Notification sent and flag written. Will stay quiet until re-armed.")
+        signal_found()
     except Exception:
         log("ERROR sending email (will retry next run):\n" + traceback.format_exc())
 

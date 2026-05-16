@@ -1,0 +1,52 @@
+name: BTS Parking Check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 min (GitHub may delay/coalesce)
+  workflow_dispatch: {}        # manual "Run workflow" button
+
+permissions:
+  actions: write               # allow the job to disable this workflow
+
+concurrency:
+  group: bts-parking-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run checker
+        id: check
+        env:
+          BTS_EMAIL: ${{ secrets.BTS_EMAIL }}
+          BTS_APP_PASSWORD: ${{ secrets.BTS_APP_PASSWORD }}
+          BTS_RECIPIENTS: ${{ secrets.BTS_RECIPIENTS }}
+        run: python checker.py
+
+      - name: Upload page snapshot on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last_page
+          path: last_page.html
+          if-no-files-found: ignore
+
+      - name: Disable workflow after alert
+        if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "July detected and email sent - disabling this workflow."
+          gh workflow disable "BTS Parking Check"
