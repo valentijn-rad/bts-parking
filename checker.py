@@ -177,69 +177,77 @@ def click_next(page) -> bool:
         return False
 
 
+def advance_to_highest(page) -> tuple[bool, str]:
+    """From the freshly-loaded calendar, click Next until July appears or the
+    chevron disappears. Leaves the page on the highest reachable month and
+    returns (july_found, that_month_label)."""
+    label = get_month_label(page)
+    log(f"Calendar opened on: '{label or '(unknown)'}'")
+    if TARGET_MONTH.lower() in label.lower():
+        log("July already visible on first load.")
+        return True, label
+
+    for attempt in range(1, MAX_NEXT_CLICKS + 1):
+        if not next_is_available(page):
+            log(
+                f"Chevron gone at '{label}' (attempt {attempt}); this is the "
+                f"highest bookable month. July not bookable yet."
+            )
+            return False, label
+
+        prev_label = label
+        click_next(page)
+        label = get_month_label(page)
+        log(f"Advanced to: '{label or '(unknown)'}'")
+
+        if TARGET_MONTH.lower() in label.lower():
+            log(f"July became visible after {attempt} click(s).")
+            return True, label
+
+        if label and label == prev_label:
+            log("Month did not change after click; stopping.")
+            return False, label
+
+    log("July not reached within click limit.")
+    return False, label
+
+
+def _open_calendar(page) -> None:
+    page.goto(URL, wait_until="networkidle", timeout=45000)
+    page.wait_for_timeout(2500)
+    dismiss_cookie_banner(page)
+    page.wait_for_timeout(1000)
+
+
 def check_availability() -> tuple[bool, Path | None]:
+    """Returns (july_found, screenshot_of_highest_reachable_month)."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            page.goto(URL, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(2500)
-            dismiss_cookie_banner(page)
-            page.wait_for_timeout(1000)
-
-            # Always save the latest rendered HTML for debugging.
+            _open_calendar(page)
+            july_found, highest = advance_to_highest(page)
+            # Persist the highest-month state for debugging / artifacts.
             try:
                 SNAPSHOT_PATH.write_text(page.content(), encoding="utf-8")
             except Exception:
                 pass
-
-            label = get_month_label(page)
-            log(f"Calendar opened on: '{label or '(unknown)'}'")
-            if TARGET_MONTH.lower() in label.lower():
-                log("July already visible on first load.")
-                return True, take_screenshot(page)
-
-            for attempt in range(1, MAX_NEXT_CLICKS + 1):
-                if not next_is_available(page):
-                    log(
-                        f"Next-month control unavailable at '{label}' "
-                        f"(attempt {attempt}). July not bookable yet."
-                    )
-                    return False, None
-
-                prev_label = label
-                click_next(page)
-                label = get_month_label(page)
-                log(f"Advanced to: '{label or '(unknown)'}'")
-
-                if TARGET_MONTH.lower() in label.lower():
-                    log(f"July became visible after {attempt} click(s).")
-                    SNAPSHOT_PATH.write_text(page.content(), encoding="utf-8")
-                    return True, take_screenshot(page)
-
-                if label and label == prev_label:
-                    log("Month did not change after click; stopping.")
-                    return False, None
-
-            log("July not reached within click limit.")
-            return False, None
+            shot = take_screenshot(page)
+            return july_found, shot
         finally:
             browser.close()
 
 
 def capture_current_page() -> Path | None:
-    """Open the site and screenshot whatever the calendar currently shows.
-    Used by --test-email so the test proves the screenshot pipeline too."""
+    """Open the site, advance to the highest reachable month, screenshot it.
+    Used by --test-email so the test shows how far the calendar currently goes."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            page.goto(URL, wait_until="networkidle", timeout=45000)
-            page.wait_for_timeout(2500)
-            dismiss_cookie_banner(page)
-            page.wait_for_timeout(1000)
-            label = get_month_label(page)
-            log(f"Test screenshot - calendar on: '{label or '(unknown)'}'")
+            _open_calendar(page)
+            _, highest = advance_to_highest(page)
+            log(f"Test screenshot at highest reachable month: '{highest}'")
             return take_screenshot(page)
         finally:
             browser.close()
