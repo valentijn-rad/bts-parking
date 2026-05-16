@@ -219,8 +219,8 @@ def _open_calendar(page) -> None:
     page.wait_for_timeout(1000)
 
 
-def check_availability() -> tuple[bool, Path | None]:
-    """Returns (july_found, screenshot_of_highest_reachable_month)."""
+def check_availability() -> tuple[bool, Path | None, str]:
+    """Returns (july_found, screenshot, highest_reachable_month_label)."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -233,7 +233,7 @@ def check_availability() -> tuple[bool, Path | None]:
             except Exception:
                 pass
             shot = take_screenshot(page)
-            return july_found, shot
+            return july_found, shot, highest
         finally:
             browser.close()
 
@@ -309,7 +309,8 @@ def main() -> None:
         send_test_email()
         return
 
-    log("--- Run start ---")
+    heartbeat = "--heartbeat" in sys.argv
+    log(f"--- Run start{' (heartbeat)' if heartbeat else ''} ---")
 
     # Local only: the flag file persists between runs. In Actions the runner
     # is ephemeral, so the workflow self-disables instead (see signal_found).
@@ -324,12 +325,31 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        available, screenshot = check_availability()
+        available, screenshot, highest = check_availability()
     except Exception:
         log("ERROR during check:\n" + traceback.format_exc())
         return
 
     if not available:
+        if heartbeat:
+            try:
+                send_email(
+                    config,
+                    f"BTS parking checker - weekly heartbeat (still on {highest})",
+                    f"""
+                    <h2>Checker is alive and watching.</h2>
+                    <p>July is <strong>not</strong> bookable yet. The calendar
+                    currently goes up to <strong>{highest}</strong> (screenshot
+                    attached). You'll get the alert the moment July appears -
+                    no action needed from you.</p>
+                    <p><a href="{URL}">{URL}</a></p>
+                    <p style="color:#888;font-size:12px">
+                    Weekly heartbeat sent {datetime.now():%Y-%m-%d %H:%M:%S}.</p>
+                    """,
+                    attachment=screenshot,
+                )
+            except Exception:
+                log("ERROR sending heartbeat:\n" + traceback.format_exc())
         log("--- Run end (no change) ---")
         return
 

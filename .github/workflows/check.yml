@@ -2,7 +2,8 @@ name: BTS Parking Check
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 min (GitHub may delay/coalesce)
+    - cron: "*/15 * * * *"   # every 15 min: silent check (may be delayed)
+    - cron: "0 9 * * 1"      # Mon 09:00 UTC: weekly heartbeat email
   workflow_dispatch:           # manual "Run workflow" button
     inputs:
       test_email:
@@ -42,6 +43,9 @@ jobs:
           if [ "${{ inputs.test_email }}" = "true" ]; then
             echo "Manual test-email run."
             python checker.py --test-email
+          elif [ "${{ github.event.schedule }}" = "0 9 * * 1" ]; then
+            echo "Weekly heartbeat run."
+            python checker.py --heartbeat
           else
             python checker.py
           fi
