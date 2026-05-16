@@ -1,0 +1,9 @@
+# Credentials - never commit
+config.json
+
+# Runtime artifacts
+notified.flag
+checker.log
+last_page.html
+__pycache__/
+*.pyc
