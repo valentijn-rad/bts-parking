@@ -38,9 +38,13 @@ IN_ACTIONS = bool(os.environ.get("GITHUB_ACTIONS"))
 
 URL = "https://parking.tickets.brussels-expo.com/schedule?language=en"
 
-# What we are looking for in the calendar. The concert is 2026-07-02, so the
-# trigger is simply: the word "July" appears in the rendered calendar.
-TARGET_MONTH = "July"
+# Trigger:  a bookable timeslot exists on 2026-07-02 (BTS concert date).
+# Two signals - either is enough; bias toward over-alerting since missing the
+# real opening is far worse than an occasional spurious alert.
+TARGET_MONTH = "July"      # used by navigation only
+TARGET_DATE = "2026-07-02"
+EVENT_SELECTOR = f'a.fc-event[href*="{TARGET_DATE}"]'
+DAY_CELL_SELECTOR = f'td[data-date="{TARGET_DATE}"]'
 
 # Safety cap on how many times we press "Next" before giving up for this run.
 MAX_NEXT_CLICKS = 8
@@ -238,6 +242,28 @@ def advance_to_highest(page) -> tuple[bool, str]:
     return False, label
 
 
+def target_is_bookable(page) -> bool:
+    """True iff July 2 has a clickable timeslot link, or its day cell is no
+    longer marked calendar-day-disabled. Either signal alerts (belt+suspenders)."""
+    try:
+        if page.locator(EVENT_SELECTOR).count() > 0:
+            log(f"Found event link for {TARGET_DATE}.")
+            return True
+    except Exception:
+        pass
+    try:
+        cell = page.locator(DAY_CELL_SELECTOR).first
+        if cell.count() > 0:
+            cls = cell.get_attribute("class") or ""
+            if "calendar-day-disabled" not in cls:
+                log(f"Day cell {TARGET_DATE} is no longer disabled.")
+                return True
+            log(f"Day cell {TARGET_DATE} still has calendar-day-disabled.")
+    except Exception:
+        pass
+    return False
+
+
 def _open_calendar(page) -> None:
     page.goto(URL, wait_until="networkidle", timeout=45000)
     page.wait_for_timeout(2500)
@@ -246,20 +272,28 @@ def _open_calendar(page) -> None:
 
 
 def check_availability() -> tuple[bool, Path | None, str]:
-    """Returns (july_found, screenshot, highest_reachable_month_label)."""
+    """Returns (july2_bookable, screenshot, highest_reachable_month_label).
+
+    july2_bookable is True only when July 2 specifically has a clickable
+    timeslot - not merely when July is visible on the calendar."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         try:
             _open_calendar(page)
             july_found, highest = advance_to_highest(page)
-            # Persist the highest-month state for debugging / artifacts.
+            bookable = False
+            if july_found:
+                bookable = target_is_bookable(page)
+                log(f"July 2 bookable: {bookable}")
+            else:
+                log("July not visible; July 2 cannot be bookable.")
             try:
                 SNAPSHOT_PATH.write_text(page.content(), encoding="utf-8")
             except Exception:
                 pass
             shot = take_screenshot(page)
-            return july_found, shot, highest
+            return bookable, shot, highest
         finally:
             browser.close()
 
@@ -366,12 +400,13 @@ def main() -> None:
             try:
                 send_email(
                     config,
-                    f"BTS parking checker - weekly heartbeat (still on {highest})",
+                    f"BTS parking checker - weekly heartbeat ({highest}, July 2 not yet bookable)",
                     f"""
                     <h2>Checker is alive and watching.</h2>
-                    <p>July is <strong>not</strong> bookable yet. The calendar
-                    currently goes up to <strong>{highest}</strong> (screenshot
-                    attached). You'll get the alert the moment July appears -
+                    <p>Calendar currently shows up to <strong>{highest}</strong>,
+                    but a timeslot for <strong>July 2</strong> is
+                    <strong>not</strong> yet bookable (screenshot attached).
+                    You'll get the alert the moment July 2 opens for booking -
                     no action needed from you.</p>
                     <p><a href="{URL}">{URL}</a></p>
                     <p style="color:#888;font-size:12px">
@@ -383,8 +418,8 @@ def main() -> None:
                 log("ERROR sending heartbeat email:\n" + traceback.format_exc())
             send_whatsapp(
                 config,
-                f"BTS parking checker heartbeat: alive, calendar still on "
-                f"{highest}. Will alert when July opens.",
+                f"BTS parking checker heartbeat: alive, calendar shows up to "
+                f"{highest} but July 2 not yet bookable. Will alert when it opens.",
             )
         log("--- Run end (no change) ---")
         return
@@ -393,11 +428,11 @@ def main() -> None:
     try:
         send_email(
             config,
-            "BTS Parking ALERT - July is now on the booking calendar",
+            "BTS Parking ALERT - July 2 is now bookable",
             f"""
-            <h2>July is now available on the Brussels Expo parking calendar</h2>
-            <p>The booking calendar has advanced to July. Go book
-            <strong>Parking C for July 2</strong> before it sells out:</p>
+            <h2>A timeslot for July 2 is now bookable on the parking calendar</h2>
+            <p>The Brussels Expo calendar has opened a slot on <strong>July 2</strong>
+            (BTS concert). Go grab <strong>Parking C</strong> before it sells out:</p>
             <p><a href="{URL}">{URL}</a></p>
             <p style="color:#888;font-size:12px">
             Sent automatically by the BTS parking checker at
@@ -411,8 +446,8 @@ def main() -> None:
 
     whatsapp_ok = send_whatsapp(
         config,
-        "BTS Parking ALERT: July is now on the booking calendar! "
-        f"Book Parking C for July 2 now: {URL}",
+        "BTS Parking ALERT: a timeslot on July 2 is now bookable! "
+        f"Grab Parking C now: {URL}",
     )
 
     if email_ok or whatsapp_ok:

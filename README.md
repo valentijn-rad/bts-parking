@@ -27,13 +27,19 @@ Each run (`checker.py`):
 5. Reads the calendar month header, then loops up to 8 times:
    - Next-month button hidden/disabled → next month not bookable → stop, no email.
    - Otherwise click it and read the new header.
-   - Header contains **"July"** → **trigger**.
-6. On trigger: email every recipient, then record the hit so it stops alerting
-   (cloud: disables the workflow; local: writes `notified.flag`).
-7. On error: log to `checker.log` and exit cleanly; the next run retries.
+6. Once on July, checks whether **July 2** specifically has a clickable
+   timeslot. Two signals - either is enough:
+   - an `<a class="fc-event" href*="2026-07-02">` link in the events grid, or
+   - the `td[data-date="2026-07-02"]` cell no longer carries the
+     `calendar-day-disabled` class.
+7. On trigger: email + WhatsApp every recipient, then record the hit so it stops
+   alerting (cloud: disables the workflow; local: writes `notified.flag`).
+8. On error: log to `checker.log` and exit cleanly; the next run retries.
 
-**Trigger condition:** the calendar reaches "July 2026". It does **not** verify
-Parking C specifically — confirm that yourself when you get the alert.
+**Trigger condition:** a bookable timeslot appears for **2026-07-02**. Merely
+having July visible on the calendar (e.g. only July 12 listed for a different
+concert) does **not** trigger. It does not verify Parking C is the slot - confirm
+that yourself when you get the alert.
 
 ---
 
